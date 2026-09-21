@@ -20,3 +20,30 @@ workflows:
             CODE_SIGNING_ALLOWED=NO
     artifacts:
       - build/Build/Products/**/*.app
+
+  ios-app-store-build:
+    name: GOLFPAQ - App Store Build
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Codemagic GOLFPAQ
+    environment:
+      xcode: latest
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: jp.aidesignworks.golfpaq
+      vars:
+        XCODE_PROJECT: "CodemagicTest.xcodeproj"
+        XCODE_SCHEME: "CodemagicTest"
+    scripts:
+      - name: Set up code signing
+        script: |
+          xcode-project use-profiles
+      - name: Build IPA
+        script: |
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log

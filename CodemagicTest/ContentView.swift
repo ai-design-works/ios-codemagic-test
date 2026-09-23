@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import UIKit
 
 struct ContentView: View {
     var body: some View {
@@ -34,21 +35,9 @@ struct GOLFPAQWebView: UIViewRepresentable {
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
 
-        // Android版と同様、WebView特有の識別を弱める
-        webView.customUserAgent =
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) " +
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 " +
-            "Mobile/15E148 Safari/604.1"
-
-        var request = URLRequest(url: myPageURL)
-
-        // GOLFPAQ通常ページ
-        request.setValue(
-            "ja,en-US;q=0.9,en;q=0.8",
-            forHTTPHeaderField: "Accept-Language"
-        )
-
-        webView.load(request)
+        // 初回のGOLFPAQページには余計な決済用ヘッダーを付けない。
+        // Android完成版と同じ考え方。
+        webView.load(URLRequest(url: myPageURL))
 
         return webView
     }
@@ -58,19 +47,17 @@ struct GOLFPAQWebView: UIViewRepresentable {
 
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
 
-        // Android版で実機確認済みの値
         private let externalAcceptLanguage =
             "ja,en-US;q=0.9,en;q=0.8"
 
-        // 決済入口ホスト
         private let paymentEntryHost =
             "www.golfpaq.net"
 
-        // このWebViewで決済入口を初めて通ったか
         private var paymentEntryNeedsPrimeReload = false
-
-        // 再読み込みを既に実施したか
         private var paymentEntryPrimed = false
+        private var paymentTransferErrorAutoBackDone = false
+
+        // MARK: - URL判定
 
         private func isPaymentEntryURL(_ url: URL) -> Bool {
 
@@ -80,15 +67,24 @@ struct GOLFPAQWebView: UIViewRepresentable {
                 return false
             }
 
-            let path = url.path.trimmingCharacters(
-                in: CharacterSet(charactersIn: "/")
-            )
+            let path = url.path.lowercased()
 
             return path.contains("/payment/") &&
-                   path.hasSuffix("purchase.php")
+                   path.hasSuffix("/purchase.php")
         }
 
-        // target="_blank" / window.open() を同じWebViewで開く
+        private func isExternalHost(_ url: URL) -> Bool {
+
+            guard let host = url.host?.lowercased() else {
+                return false
+            }
+
+            return host != "golfpaq.net" &&
+                   !host.hasSuffix(".golfpaq.net")
+        }
+
+        // MARK: - target="_blank" / window.open()
+
         func webView(
             _ webView: WKWebView,
             createWebViewWith configuration: WKWebViewConfiguration,
@@ -96,21 +92,35 @@ struct GOLFPAQWebView: UIViewRepresentable {
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
 
-            if navigationAction.targetFrame == nil,
-               let url = navigationAction.request.url {
-
-                var request = URLRequest(url: url)
-
-                request.setValue(
-                    externalAcceptLanguage,
-                    forHTTPHeaderField: "Accept-Language"
-                )
-
-                webView.load(request)
+            guard
+                navigationAction.targetFrame == nil,
+                let url = navigationAction.request.url
+            else {
+                return nil
             }
+
+            let method =
+                navigationAction.request.httpMethod?.uppercased() ?? "GET"
+
+            // POSTは絶対にGETへ変換しない。
+            if method == "POST" {
+                webView.load(navigationAction.request)
+                return nil
+            }
+
+            var request = navigationAction.request
+
+            request.setValue(
+                externalAcceptLanguage,
+                forHTTPHeaderField: "Accept-Language"
+            )
+
+            webView.load(request)
 
             return nil
         }
+
+        // MARK: - ナビゲーション制御
 
         func webView(
             _ webView: WKWebView,
@@ -123,10 +133,76 @@ struct GOLFPAQWebView: UIViewRepresentable {
                 return
             }
 
-            // Android版と同じ考え方：
-            // purchase.php への最初のGET到達だけを記録
-            if navigationAction.targetFrame?.isMainFrame == true &&
-               navigationAction.request.httpMethod?.uppercased() != "POST" &&
+            let scheme = url.scheme?.lowercased() ?? ""
+
+            // tel: / mailto: 等
+            if scheme != "http" && scheme != "https" {
+
+                if UIApplication.shared.canOpenURL(url) {
+                    UIApplication.shared.open(url)
+                    decisionHandler(.cancel)
+                    return
+                }
+
+                decisionHandler(.allow)
+                return
+            }
+
+            let isMainFrame =
+                navigationAction.targetFrame?.isMainFrame == true
+
+            let method =
+                navigationAction.request.httpMethod?.uppercased() ?? "GET"
+
+            let isPost = method == "POST"
+
+            // ---------------------------------------------------------
+            // Android完成版と同じ重要処理
+            //
+            // golfpaq.net以外へのメインフレームGET
+            // （VeriTrans等）にAccept-Languageを付け直す。
+            //
+            // POSTには絶対に触れない。
+            //
+            // すでに正しいヘッダーが入っている場合はallowすることで
+            // 無限リロードを防止。
+            // ---------------------------------------------------------
+
+            if isMainFrame &&
+               !isPost &&
+               isExternalHost(url) {
+
+                let currentLanguage =
+                    navigationAction.request.value(
+                        forHTTPHeaderField: "Accept-Language"
+                    )
+
+                if currentLanguage != externalAcceptLanguage {
+
+                    var correctedRequest =
+                        navigationAction.request
+
+                    correctedRequest.setValue(
+                        externalAcceptLanguage,
+                        forHTTPHeaderField: "Accept-Language"
+                    )
+
+                    decisionHandler(.cancel)
+
+                    DispatchQueue.main.async {
+                        webView.load(correctedRequest)
+                    }
+
+                    return
+                }
+            }
+
+            // ---------------------------------------------------------
+            // purchase.php 初回到達を記録
+            // ---------------------------------------------------------
+
+            if isMainFrame &&
+               !isPost &&
                isPaymentEntryURL(url) &&
                !paymentEntryPrimed &&
                !paymentEntryNeedsPrimeReload {
@@ -134,62 +210,108 @@ struct GOLFPAQWebView: UIViewRepresentable {
                 paymentEntryNeedsPrimeReload = true
             }
 
-            let scheme = url.scheme?.lowercased() ?? ""
-
-            // HTTP / HTTPS はWebView内で処理
-            if scheme == "http" || scheme == "https" {
-                decisionHandler(.allow)
-                return
-            }
-
-            // tel: / mailto: など
-            if UIApplication.shared.canOpenURL(url) {
-                UIApplication.shared.open(url)
-                decisionHandler(.cancel)
-                return
-            }
-
             decisionHandler(.allow)
         }
+
+        // MARK: - 読み込み完了
 
         func webView(
             _ webView: WKWebView,
             didFinish navigation: WKNavigation!
         ) {
 
+            guard let finishedURL = webView.url else {
+                return
+            }
+
+            // purchase.php以外なら通常処理
+            guard isPaymentEntryURL(finishedURL) else {
+                return
+            }
+
+            // ---------------------------------------------------------
+            // Android版と同じ転送エラー検出
+            // DOMは変更せず本文を読むだけ。
+            // ---------------------------------------------------------
+
+            let errorCheckJavaScript = """
+            (function() {
+                var text =
+                    (document.body && document.body.innerText) || '';
+                return text.indexOf('転送エラー') !== -1;
+            })();
+            """
+
+            webView.evaluateJavaScript(
+                errorCheckJavaScript
+            ) { [weak self, weak webView] result, _ in
+
+                guard
+                    let self = self,
+                    let webView = webView
+                else {
+                    return
+                }
+
+                let hasTransferError =
+                    (result as? Bool) == true
+
+                guard hasTransferError else {
+                    return
+                }
+
+                // 再読み込み中には戻らない。
+                // Android版のprogressBar判定に相当。
+                guard !webView.isLoading else {
+                    return
+                }
+
+                guard
+                    self.paymentEntryPrimed,
+                    !self.paymentTransferErrorAutoBackDone,
+                    webView.canGoBack
+                else {
+                    return
+                }
+
+                self.paymentTransferErrorAutoBackDone = true
+
+                webView.goBack()
+            }
+
+            // ---------------------------------------------------------
+            // purchase.php 初回到達時のみ1回再GET
+            //
+            // Android版:
+            // CookieManager.flush()
+            // ↓
+            // loadUrl(finishedUrl)
+            //
+            // WKWebViewにはAndroidと同じflush APIは存在しないため、
+            // 永続WKWebsiteDataStore上で同じURLを1回だけ再GETする。
+            //
+            // ここではAccept-Languageを追加しない。
+            // Android完成版のloadUrl(finishedUrl)と合わせる。
+            // ---------------------------------------------------------
+
             guard
                 paymentEntryNeedsPrimeReload,
-                !paymentEntryPrimed,
-                let url = webView.url,
-                isPaymentEntryURL(url)
+                !paymentEntryPrimed
             else {
                 return
             }
 
-            // Android版と同じく、この画面につき1回だけ実行
             paymentEntryPrimed = true
             paymentEntryNeedsPrimeReload = false
 
-            // Cookieを確定させてから同じ決済入口を再GET
-            webView.configuration.websiteDataStore.httpCookieStore
-                .getAllCookies { [weak webView] _ in
-
-                    guard let webView = webView else {
-                        return
-                    }
-
-                    var request = URLRequest(url: url)
-
-                    request.setValue(
-                        self.externalAcceptLanguage,
-                        forHTTPHeaderField: "Accept-Language"
-                    )
-
-                    DispatchQueue.main.async {
-                        webView.load(request)
-                    }
-                }
+            DispatchQueue.main.async {
+                webView.load(
+                    URLRequest(url: finishedURL)
+                )
+            }
         }
+
+        // MARK: - エラー
 
         func webView(
             _ webView: WKWebView,

@@ -10,7 +10,8 @@ struct ContentView: View {
 
 struct GOLFPAQWebView: UIViewRepresentable {
 
-    private let myPageURL = URL(string: "https://golfpaq.net/booking/mypage")!
+    private let myPageURL =
+        URL(string: "https://golfpaq.net/booking/mypage")!
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -33,16 +34,17 @@ struct GOLFPAQWebView: UIViewRepresentable {
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
 
-        // Android版の決済ページ対策に合わせ、
-        // WebView特有のUser-Agent識別を弱める
+        // Android版と同様、WebView特有の識別を弱める
         webView.customUserAgent =
             "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) " +
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 " +
             "Mobile/15E148 Safari/604.1"
 
         var request = URLRequest(url: myPageURL)
+
+        // GOLFPAQ通常ページ
         request.setValue(
-            "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+            "ja,en-US;q=0.9,en;q=0.8",
             forHTTPHeaderField: "Accept-Language"
         )
 
@@ -56,6 +58,36 @@ struct GOLFPAQWebView: UIViewRepresentable {
 
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
 
+        // Android版で実機確認済みの値
+        private let externalAcceptLanguage =
+            "ja,en-US;q=0.9,en;q=0.8"
+
+        // 決済入口ホスト
+        private let paymentEntryHost =
+            "www.golfpaq.net"
+
+        // このWebViewで決済入口を初めて通ったか
+        private var paymentEntryNeedsPrimeReload = false
+
+        // 再読み込みを既に実施したか
+        private var paymentEntryPrimed = false
+
+        private func isPaymentEntryURL(_ url: URL) -> Bool {
+
+            guard
+                url.host?.lowercased() == paymentEntryHost
+            else {
+                return false
+            }
+
+            let path = url.path.trimmingCharacters(
+                in: CharacterSet(charactersIn: "/")
+            )
+
+            return path.contains("/payment/") &&
+                   path.hasSuffix("purchase.php")
+        }
+
         // target="_blank" / window.open() を同じWebViewで開く
         func webView(
             _ webView: WKWebView,
@@ -64,19 +96,22 @@ struct GOLFPAQWebView: UIViewRepresentable {
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
 
-            if navigationAction.targetFrame == nil {
-                var request = navigationAction.request
+            if navigationAction.targetFrame == nil,
+               let url = navigationAction.request.url {
+
+                var request = URLRequest(url: url)
+
                 request.setValue(
-                    "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+                    externalAcceptLanguage,
                     forHTTPHeaderField: "Accept-Language"
                 )
+
                 webView.load(request)
             }
 
             return nil
         }
 
-        // 通常のページ遷移にもAccept-Languageを付与
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
@@ -88,22 +123,26 @@ struct GOLFPAQWebView: UIViewRepresentable {
                 return
             }
 
-            let host = url.host?.lowercased() ?? ""
+            // Android版と同じ考え方：
+            // purchase.php への最初のGET到達だけを記録
+            if navigationAction.targetFrame?.isMainFrame == true &&
+               navigationAction.request.httpMethod?.uppercased() != "POST" &&
+               isPaymentEntryURL(url) &&
+               !paymentEntryPrimed &&
+               !paymentEntryNeedsPrimeReload {
 
-            // GOLFPAQおよびVeriTrans決済ページはWebView内で許可
-            if host.contains("golfpaq.net") ||
-               host.contains("veritrans.co.jp") {
+                paymentEntryNeedsPrimeReload = true
+            }
+
+            let scheme = url.scheme?.lowercased() ?? ""
+
+            // HTTP / HTTPS はWebView内で処理
+            if scheme == "http" || scheme == "https" {
                 decisionHandler(.allow)
                 return
             }
 
-            // その他のHTTP/HTTPSページも基本的にWebView内で処理
-            if url.scheme == "http" || url.scheme == "https" {
-                decisionHandler(.allow)
-                return
-            }
-
-            // tel:, mailto: 等はiOS側へ渡す
+            // tel: / mailto: など
             if UIApplication.shared.canOpenURL(url) {
                 UIApplication.shared.open(url)
                 decisionHandler(.cancel)
@@ -115,10 +154,51 @@ struct GOLFPAQWebView: UIViewRepresentable {
 
         func webView(
             _ webView: WKWebView,
+            didFinish navigation: WKNavigation!
+        ) {
+
+            guard
+                paymentEntryNeedsPrimeReload,
+                !paymentEntryPrimed,
+                let url = webView.url,
+                isPaymentEntryURL(url)
+            else {
+                return
+            }
+
+            // Android版と同じく、この画面につき1回だけ実行
+            paymentEntryPrimed = true
+            paymentEntryNeedsPrimeReload = false
+
+            // Cookieを確定させてから同じ決済入口を再GET
+            webView.configuration.websiteDataStore.httpCookieStore
+                .getAllCookies { [weak webView] _ in
+
+                    guard let webView = webView else {
+                        return
+                    }
+
+                    var request = URLRequest(url: url)
+
+                    request.setValue(
+                        self.externalAcceptLanguage,
+                        forHTTPHeaderField: "Accept-Language"
+                    )
+
+                    DispatchQueue.main.async {
+                        webView.load(request)
+                    }
+                }
+        }
+
+        func webView(
+            _ webView: WKWebView,
             didFail navigation: WKNavigation!,
             withError error: Error
         ) {
-            print("GOLFPAQ navigation error: \(error.localizedDescription)")
+            print(
+                "GOLFPAQ navigation error: \(error.localizedDescription)"
+            )
         }
 
         func webView(
@@ -126,7 +206,9 @@ struct GOLFPAQWebView: UIViewRepresentable {
             didFailProvisionalNavigation navigation: WKNavigation!,
             withError error: Error
         ) {
-            print("GOLFPAQ provisional navigation error: \(error.localizedDescription)")
+            print(
+                "GOLFPAQ provisional navigation error: \(error.localizedDescription)"
+            )
         }
     }
 }

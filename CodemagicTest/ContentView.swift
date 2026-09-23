@@ -294,9 +294,42 @@ struct GOLFPAQWebView: UIViewRepresentable {
         private let myPageDestinationURL =
             URL(string: "https://golfpaq.net/booking/mypage")!
 
+        // Build 9: 会員有効期限切れ警告（Android完成版 WebViewActivity.kt
+        // MEMBER_ACCOUNT_URLを根拠とする。パスのみの一致判定で、
+        // Android側のnormalizedPath()（ホストは見ず、クエリ・フラグメント除去、
+        // 末尾"/"除去）と同じ挙動にする）。
+        private let memberAccountURL =
+            URL(string: "https://golfpaq.net/booking/mypage/account/show")!
+
         private func matchesExactURL(_ url: URL, _ target: URL) -> Bool {
             return url.host?.lowercased() == target.host?.lowercased() &&
                    url.path.lowercased() == target.path.lowercased()
+        }
+
+        // Android完成版 WebViewActivity.kt normalizedPath() と同じ挙動：
+        // クエリ・フラグメントを除いたパスを取り出し、末尾の"/"をすべて除去する。
+        private func normalizedPath(_ url: URL) -> String {
+            var path = url.path
+            while path.hasSuffix("/") {
+                path.removeLast()
+            }
+            return path
+        }
+
+        // Android完成版 isMemberAccountUrl() と同じ、パスのみの一致判定。
+        private func isMemberAccountURL(_ url: URL) -> Bool {
+            return normalizedPath(url) == normalizedPath(memberAccountURL)
+        }
+
+        // Android完成版 isMyPageTopUrl() と同じ、パスのみの一致判定。
+        private func isMyPageTopURL(_ url: URL) -> Bool {
+            return normalizedPath(url) == normalizedPath(myPageDestinationURL)
+        }
+
+        // Android完成版 isMembershipExpiryTargetUrl() と同じ。
+        // 会員情報画面とMY PAGEトップの2画面だけが対象。
+        private func isMembershipExpiryTargetURL(_ url: URL) -> Bool {
+            return isMemberAccountURL(url) || isMyPageTopURL(url)
         }
 
         private func isNoticeTopPageURL(_ url: URL) -> Bool {
@@ -576,6 +609,100 @@ struct GOLFPAQWebView: UIViewRepresentable {
             webView.evaluateJavaScript(javaScript)
         }
 
+        // Build 9: 会員有効期限切れ警告。
+        // Android完成版 WebViewActivity.kt の injectMembershipExpiryNotice() を
+        // 忠実に移植したもの。DOM構造・class名には依存せず、「有効期限」という
+        // 表示文字列そのものをテキストノードとして探す方式（Android側と同じ）。
+        // 対象は会員情報画面・MY PAGEトップの2画面のみ（isMembershipExpiryTargetURL
+        // で判定済みの場合のみ呼び出される）。フォーム・Cookie・通信・
+        // 決済コードには一切触れない。読み取りと警告要素の追加・削除のみ。
+        private func injectMembershipExpiryNotice(
+            into webView: WKWebView,
+            isMyPageTop: Bool
+        ) {
+            let javaScript = """
+            (function() {
+                var NOTICE_ID = 'golfpaq_membership_expiry_notice';
+                var IS_MY_PAGE_TOP = \(isMyPageTop ? "true" : "false");
+                var existing = document.getElementById(NOTICE_ID);
+
+                function findExpiryDateNode() {
+                    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                    var textNodes = [];
+                    var node;
+                    while ((node = walker.nextNode())) { textNodes.push(node); }
+                    for (var i = 0; i < textNodes.length; i++) {
+                        var label = textNodes[i].nodeValue.trim().replace(/[:：]$/, '');
+                        if (label === '有効期限') {
+                            for (var j = i + 1; j < textNodes.length; j++) {
+                                var t = textNodes[j].nodeValue.trim();
+                                if (t === '') continue;
+                                var m = t.match(/^(\\d{4})年(\\d{1,2})月(\\d{1,2})日$/);
+                                return m ? { node: textNodes[j], match: m } : null;
+                            }
+                            return null;
+                        }
+                    }
+                    return null;
+                }
+
+                var found = findExpiryDateNode();
+                if (!found) {
+                    return;
+                }
+
+                var y = parseInt(found.match[1], 10);
+                var mo = parseInt(found.match[2], 10);
+                var d = parseInt(found.match[3], 10);
+                var expiry = new Date(y, mo - 1, d);
+                expiry.setHours(0, 0, 0, 0);
+                var today = new Date();
+                today.setHours(0, 0, 0, 0);
+                var expired = expiry.getTime() < today.getTime();
+
+                if (!expired) {
+                    if (existing && existing.parentNode) { existing.parentNode.removeChild(existing); }
+                    return;
+                }
+                if (existing) {
+                    return;
+                }
+
+                var dateParent = found.node.parentNode;
+                var anchor = (dateParent && dateParent.nodeType === 1) ? dateParent : found.node;
+                var noticeTag = 'div';
+                var noticeClassName = '';
+
+                if (IS_MY_PAGE_TOP) {
+                    var row = anchor;
+                    while (row && row.nodeType === 1 && row.tagName !== 'LI') {
+                        row = row.parentElement;
+                    }
+                    if (row && row.tagName === 'LI' && row.parentNode) {
+                        anchor = row;
+                        noticeTag = 'li';
+                        noticeClassName = row.className;
+                    }
+                }
+
+                var notice = document.createElement(noticeTag);
+                notice.id = NOTICE_ID;
+                notice.textContent = '年度会員を更新してください';
+                notice.style.color = '#D32F2F';
+                notice.style.fontWeight = 'bold';
+                notice.style.margin = '4px 0';
+                notice.style.whiteSpace = 'nowrap';
+                if (noticeClassName) { notice.className = noticeClassName; }
+
+                if (anchor.parentNode) {
+                    anchor.parentNode.insertBefore(notice, anchor.nextSibling);
+                }
+            })();
+            """
+
+            webView.evaluateJavaScript(javaScript)
+        }
+
         func webView(
             _ webView: WKWebView,
             createWebViewWith configuration: WKWebViewConfiguration,
@@ -810,6 +937,15 @@ struct GOLFPAQWebView: UIViewRepresentable {
             if let committedURL = webView.url,
                !isPaymentEntryURL(committedURL) {
                 injectAndroidParityCSS(into: webView)
+
+                // Build 9: 会員有効期限切れ警告も、Android完成版の
+                // onPageCommitVisible相当の早い段階で適用する。
+                if isMembershipExpiryTargetURL(committedURL) {
+                    injectMembershipExpiryNotice(
+                        into: webView,
+                        isMyPageTop: isMyPageTopURL(committedURL)
+                    )
+                }
             }
         }
 
@@ -841,6 +977,15 @@ struct GOLFPAQWebView: UIViewRepresentable {
 
                 if isNoticeTopPageURL(finishedURL) {
                     injectNoticeAutoScroll(into: webView)
+                }
+
+                // Build 9: 会員有効期限切れ警告（Android完成版の
+                // onPageFinished相当）。対象外URLでは関数内で即returnする。
+                if isMembershipExpiryTargetURL(finishedURL) {
+                    injectMembershipExpiryNotice(
+                        into: webView,
+                        isMyPageTop: isMyPageTopURL(finishedURL)
+                    )
                 }
             }
 

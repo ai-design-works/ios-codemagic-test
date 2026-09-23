@@ -1,32 +1,12 @@
 workflows:
-  ios-simulator-build:
-    name: CodemagicTest - iOS Simulator Unsigned Build
-    max_build_duration: 30
-    instance_type: mac_mini_m2
-    environment:
-      xcode: latest
-      vars:
-        XCODE_PROJECT: "CodemagicTest.xcodeproj"
-        XCODE_SCHEME: "CodemagicTest"
-    scripts:
-      - name: Build for iOS Simulator (no code signing)
-        script: |
-          xcodebuild build \
-            -project "$XCODE_PROJECT" \
-            -scheme "$XCODE_SCHEME" \
-            -sdk iphonesimulator \
-            -destination "generic/platform=iOS Simulator" \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO
-    artifacts:
-      - build/Build/Products/**/*.app
-
   ios-app-store-build:
     name: GOLFPAQ - App Store Build
     max_build_duration: 30
     instance_type: mac_mini_m2
+
     integrations:
       app_store_connect: Codemagic GOLFPAQ
+
     environment:
       xcode: latest
       ios_signing:
@@ -35,18 +15,49 @@ workflows:
       vars:
         XCODE_PROJECT: "CodemagicTest.xcodeproj"
         XCODE_SCHEME: "CodemagicTest"
+
     scripts:
       - name: Set up code signing
         script: |
           xcode-project use-profiles
+
       - name: Build IPA
         script: |
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME"
+
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
+
     publishing:
       app_store_connect:
         auth: integration
+
+
+  ios-preflight-check:
+    name: GOLFPAQ - Preflight Check
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+
+    environment:
+      xcode: latest
+
+    scripts:
+      - name: Swift syntax and project compile check
+        script: |
+          set -e
+
+          echo "=== GOLFPAQ Preflight Check ==="
+          echo "Checking Xcode project and Swift compilation..."
+
+          xcodebuild \
+            -project "CodemagicTest.xcodeproj" \
+            -scheme "CodemagicTest" \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+          echo "=== PREFLIGHT PASSED ==="

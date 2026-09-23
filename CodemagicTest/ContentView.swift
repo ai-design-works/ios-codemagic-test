@@ -2,17 +2,196 @@ import SwiftUI
 import WebKit
 import UIKit
 
+// MARK: - Build 9: ホーム画面のentry point
+
+// Android完成版のMainActivity.kt / Config.ktを根拠とする。
+// MY PAGE: Config.MY_PAGE_URL、ヘッダータイトルはstrings.xmlのtitle_my_page。
+// ツアー予約: Config.TOUR_RESERVATION_URL、ヘッダータイトルはtitle_tour_reservation
+// （ホームボタンの文言「ツアーを予約する」とヘッダーの文言「ツアー予約」は
+// Android側でも別の文字列であり、意図的にそのまま踏襲する）。
+enum EntryPoint: Equatable {
+    case myPage
+    case tourReservation
+
+    var url: URL {
+        switch self {
+        case .myPage:
+            return URL(string: "https://golfpaq.net/booking/mypage")!
+        case .tourReservation:
+            return URL(string: "https://golfpaq.net/booking/")!
+        }
+    }
+
+    var headerTitle: String {
+        switch self {
+        case .myPage:
+            return "MY PAGE"
+        case .tourReservation:
+            return "ツアー予約"
+        }
+    }
+}
+
+private enum GOLFPAQBrand {
+    static let green = Color(red: 0x1B / 255.0, green: 0x5E / 255.0, blue: 0x20 / 255.0)
+    static let textSecondary = Color(red: 0x5F / 255.0, green: 0x63 / 255.0, blue: 0x68 / 255.0)
+    static let background = Color(red: 0xF5 / 255.0, green: 0xF7 / 255.0, blue: 0xF5 / 255.0)
+}
+
 struct ContentView: View {
+
+    // Build 9: nilならホーム画面、値があればそのentry pointでWeb画面を表示する。
+    // 単一のGOLFPAQWebView（単一WKWebView・単一Coordinator）はZStack内に常時
+    // 配置し続け、opacity/allowsHitTestingで表示/非表示を切り替えるだけで、
+    // ホーム⇔Web画面の遷移のたびにWKWebViewを再生成することは絶対にしない。
+    @State private var activeEntryPoint: EntryPoint?
+    @State private var pendingEntryPoint: EntryPoint?
+
+    @Environment(\.openURL) private var openURL
+
+    // Android完成版 Config.INFO_URL。
+    // 「お知らせ・緊急告知」はアプリ内WebViewを経由せず、端末の既定ブラウザで
+    // 開く（MainActivity.kt: openInExternalBrowser）。WebView側の状態
+    // （Cookie・session・決済state）には一切触れない。
+    private let infoURL =
+        URL(string: "https://www.golfpaq.net/info.html")!
+
     var body: some View {
-        GOLFPAQWebView()
-            .ignoresSafeArea(edges: .bottom)
+        VStack(spacing: 0) {
+            if let entryPoint = activeEntryPoint {
+                AppHeaderView(title: entryPoint.headerTitle) {
+                    // Build 9: ×はホーム画面へ戻る純粋なSwiftUI state変更のみ。
+                    // webView.goBack() / reload() / Cookie・session操作は
+                    // 一切行わない（WebViewActivity.kt: setupToolbar の
+                    // finish()と同じ「戻り先を切り替えるだけ」という考え方）。
+                    activeEntryPoint = nil
+                }
+            }
+
+            ZStack {
+                GOLFPAQWebView(pendingEntryPoint: $pendingEntryPoint)
+                    .opacity(activeEntryPoint == nil ? 0 : 1)
+                    .allowsHitTesting(activeEntryPoint != nil)
+
+                if activeEntryPoint == nil {
+                    HomeView(
+                        onSelectMyPage: { navigate(to: .myPage) },
+                        onSelectTourReservation: { navigate(to: .tourReservation) },
+                        onSelectInfo: { openURL(infoURL) }
+                    )
+                }
+            }
+        }
+        .ignoresSafeArea(edges: .bottom)
+    }
+
+    private func navigate(to entryPoint: EntryPoint) {
+        activeEntryPoint = entryPoint
+        pendingEntryPoint = entryPoint
+    }
+}
+
+// MARK: - Build 9: ホーム画面
+
+// Android完成版 activity_main.xml / strings.xml を根拠に、文言・配置を
+// 可能な限り忠実に再現する。
+struct HomeView: View {
+
+    let onSelectMyPage: () -> Void
+    let onSelectTourReservation: () -> Void
+    let onSelectInfo: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                Text("GOLFPAQ")
+                    .font(.system(size: 40, weight: .bold))
+                    .foregroundColor(GOLFPAQBrand.green)
+                    .tracking(2)
+
+                Text("ようこそ GOLFPAQ へ")
+                    .font(.system(size: 18))
+                    .foregroundColor(.primary)
+                    .padding(.top, 12)
+
+                Text("下のボタンから、マイページやツアー予約ページをすぐに開けます。")
+                    .font(.system(size: 14))
+                    .foregroundColor(GOLFPAQBrand.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 8)
+
+                HomeMenuButton(title: "MY PAGE", action: onSelectMyPage)
+                    .padding(.top, 48)
+
+                HomeMenuButton(title: "ツアーを予約する", action: onSelectTourReservation)
+                    .padding(.top, 20)
+
+                HomeMenuButton(title: "お知らせ・緊急告知", action: onSelectInfo)
+                    .padding(.top, 20)
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 40)
+            .frame(maxWidth: .infinity)
+        }
+        .background(GOLFPAQBrand.background)
+    }
+}
+
+private struct HomeMenuButton: View {
+
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 20)
+        }
+        .background(GOLFPAQBrand.green)
+        .cornerRadius(14)
+    }
+}
+
+// MARK: - Build 9: アプリ側ヘッダー（Web画面表示時のみ）
+
+// Android完成版 activity_web_view.xml（MaterialToolbar、緑背景・白文字・
+// ×アイコン）を根拠とする。
+struct AppHeaderView: View {
+
+    let title: String
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("戻る")
+
+            Text(title)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(.white)
+
+            Spacer()
+        }
+        .padding(.leading, 4)
+        .padding(.trailing, 16)
+        .background(GOLFPAQBrand.green)
     }
 }
 
 struct GOLFPAQWebView: UIViewRepresentable {
 
-    private let myPageURL =
-        URL(string: "https://golfpaq.net/booking/mypage")!
+    // Build 9: ホーム画面のボタンで選択されたentry pointを一度だけ消費し、
+    // 既存の単一WKWebViewへ明示的にload()する。新規WKWebViewは生成しない。
+    @Binding var pendingEntryPoint: EntryPoint?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -42,8 +221,9 @@ struct GOLFPAQWebView: UIViewRepresentable {
             coordinator?.retryAfterCommunicationError(webView: webView)
         }
 
-        // GOLFPAQ側の初回ページには決済用ヘッダーを追加しない。
-        webView.load(URLRequest(url: myPageURL))
+        // Build 9: 起動直後は自動ロードしない（ホーム画面を先に表示する）。
+        // ホームでボタンが選択された時点でupdateUIViewがpendingEntryPointを
+        // 検知し、このWKWebViewへ明示的にload()する。
 
         return container
     }
@@ -52,6 +232,17 @@ struct GOLFPAQWebView: UIViewRepresentable {
         _ uiView: PaymentWebContainer,
         context: Context
     ) {
+        guard let entryPoint = pendingEntryPoint else {
+            return
+        }
+
+        context.coordinator.loadEntryPoint(entryPoint, into: uiView.webView)
+
+        // SwiftUIのView更新サイクル中にstateを直接書き換えないよう、
+        // 次のrunloopで消費済みのpendingEntryPointをリセットする。
+        DispatchQueue.main.async {
+            pendingEntryPoint = nil
+        }
     }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
@@ -839,9 +1030,17 @@ struct GOLFPAQWebView: UIViewRepresentable {
                     "[GOLFPAQ] initial load failed, retrying once"
                 )
 
+                // Build 9: ホーム画面からの入口はMY PAGEとは限らない
+                // （ツアー予約から始まる場合もある）ため、常にmypageへ
+                // 再試行するのではなく、実際に読み込もうとしていたURL
+                // （pendingMainFrameNavigationURL）を優先して再試行する。
+                // 不明な場合のみ従来通りmyPageDestinationURLへフォールバックする。
                 DispatchQueue.main.async {
                     webView.load(
-                        URLRequest(url: self.myPageDestinationURL)
+                        URLRequest(
+                            url: self.pendingMainFrameNavigationURL ??
+                                self.myPageDestinationURL
+                        )
                     )
                 }
 
@@ -881,6 +1080,19 @@ struct GOLFPAQWebView: UIViewRepresentable {
                 )
                 webView.reload()
             }
+        }
+
+        // Build 9: ホーム画面のボタンから選択されたentry pointを、
+        // 既存の単一WKWebViewへ明示的にload()する。新規WKWebViewは生成しない。
+        // isPaymentEntryURL・prime reload・POST処理・Accept-Language・
+        // window.open・isExternalHost・transfer error検知・safe goBack等の
+        // 決済関連ロジックには一切触れない（通常のURL読み込みのみ）。
+        func loadEntryPoint(_ entryPoint: EntryPoint, into webView: WKWebView) {
+            debugLog(
+                "[GOLFPAQ] loading entry point: " +
+                entryPoint.url.absoluteString
+            )
+            webView.load(URLRequest(url: entryPoint.url))
         }
     }
 }

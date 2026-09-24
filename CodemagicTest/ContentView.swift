@@ -115,7 +115,7 @@ struct HomeView: View {
                     .padding(.top, 12)
 
                 Text("下のボタンから、マイページやツアー予約ページをすぐに開けます。")
-                    .font(.system(size: 14))
+                    .font(.system(size: 15))
                     .foregroundColor(GOLFPAQBrand.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.top, 8)

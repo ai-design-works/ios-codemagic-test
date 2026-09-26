@@ -1,6 +1,7 @@
 import SwiftUI
 import WebKit
 import UIKit
+import SafariServices
 
 // MARK: - Build 9: ホーム画面のentry point
 
@@ -56,6 +57,16 @@ struct ContentView: View {
     private let infoURL =
         URL(string: "https://www.golfpaq.net/info.html")!
 
+    // Build 13: アカウント削除申請（App Store Review Guideline 5.1.1(v)）。
+    // AI DESIGN WORKS側の削除専用フォームをSFSafariViewControllerで開く。
+    // アプリ内WebView（GOLFPAQWebView）とはCookie・session・決済stateを
+    // 共有しないため、既存のWeb画面には一切影響しない。
+    // ディレクトリURL（index.html）は問い合わせ誘導の旧案内なので使わない。
+    private let accountDeletionURL =
+        URL(string: "https://aidesignworks.jp/golfpaq-account-delete/form.php")!
+
+    @State private var isAccountDeletionPresented = false
+
     var body: some View {
         VStack(spacing: 0) {
             if let entryPoint = activeEntryPoint {
@@ -77,12 +88,19 @@ struct ContentView: View {
                     HomeView(
                         onSelectMyPage: { navigate(to: .myPage) },
                         onSelectTourReservation: { navigate(to: .tourReservation) },
-                        onSelectInfo: { openURL(infoURL) }
+                        onSelectInfo: { openURL(infoURL) },
+                        onSelectAccountDeletion: { isAccountDeletionPresented = true }
                     )
                 }
             }
         }
         .ignoresSafeArea(edges: .bottom)
+        .fullScreenCover(isPresented: $isAccountDeletionPresented) {
+            SafariView(url: accountDeletionURL) {
+                isAccountDeletionPresented = false
+            }
+            .ignoresSafeArea()
+        }
     }
 
     private func navigate(to entryPoint: EntryPoint) {
@@ -100,6 +118,7 @@ struct HomeView: View {
     let onSelectMyPage: () -> Void
     let onSelectTourReservation: () -> Void
     let onSelectInfo: () -> Void
+    let onSelectAccountDeletion: () -> Void
 
     var body: some View {
         ScrollView {
@@ -128,6 +147,19 @@ struct HomeView: View {
 
                 HomeMenuButton(title: "お知らせ・緊急告知", action: onSelectInfo)
                     .padding(.top, 20)
+
+                // Build 13: 既存3ボタンより控えめな見た目のテキストボタン。
+                Button(action: onSelectAccountDeletion) {
+                    Text("アカウントを削除する")
+                        .font(.system(size: 16))
+                        .foregroundColor(GOLFPAQBrand.textSecondary)
+                        .underline()
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                }
+                .padding(.top, 36)
+                .accessibilityHint("ブラウザで削除申請フォームを開きます")
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 40)
@@ -152,6 +184,39 @@ private struct HomeMenuButton: View {
         }
         .background(GOLFPAQBrand.green)
         .cornerRadius(14)
+    }
+}
+
+// MARK: - Build 13: アカウント削除申請フォーム（SFSafariViewController）
+
+private struct SafariView: UIViewControllerRepresentable {
+
+    let url: URL
+    let onFinish: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onFinish: onFinish)
+    }
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.dismissButtonStyle = .close
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+
+    final class Coordinator: NSObject, SFSafariViewControllerDelegate {
+        let onFinish: () -> Void
+
+        init(onFinish: @escaping () -> Void) {
+            self.onFinish = onFinish
+        }
+
+        func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+            onFinish()
+        }
     }
 }
 
